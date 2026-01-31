@@ -58,9 +58,75 @@ function hasImageAtStart(paragraph) {
   return firstChild.getType() === DocumentApp.ElementType.INLINE_IMAGE;
 }
 
-// 処理対象の段落を収集（パターンマッチ＆画像なし）
-function collectTargetParagraphs(paragraphs, pattern, skipProcessed) {
+// 段落先頭の画像を取得
+function getImageAtStart(paragraph) {
+  const numChildren = paragraph.getNumChildren();
+  if (numChildren === 0) return null;
+  const firstChild = paragraph.getChild(0);
+  if (firstChild.getType() === DocumentApp.ElementType.INLINE_IMAGE) {
+    return firstChild.asInlineImage();
+  }
+  return null;
+}
+
+// alt textからファイル名とハッシュを解析
+function parseAltDescription(altDesc) {
+  if (!altDesc) return { fileName: null, hash: null };
+  const parts = altDesc.split(':');
+  return {
+    fileName: parts[0] || null,
+    hash: parts[1] || null
+  };
+}
+
+// ファイル名とハッシュからalt textを生成
+function createAltDescription(fileName, hash) {
+  return hash ? `${fileName}:${hash}` : fileName;
+}
+
+// 第1パス: 必要なフォルダを特定（メタデータ事前取得用）
+function scanRequiredFolders(paragraphs, pattern) {
+  const folders = new Set();
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const para = paragraphs[i];
+    const text = para.getText();
+    const match = text.match(pattern);
+
+    if (match) {
+      const charName = match[1];
+      const englishName = CHARACTER_MAP[charName];
+      if (englishName) {
+        const folderPath = `${DROPBOX_FACES_PATH}/Face_${englishName}`;
+        folders.add(folderPath);
+      }
+    }
+  }
+
+  return Array.from(folders);
+}
+
+// メタデータを事前に一括取得
+function prefetchMetadata(service, folders) {
+  const metadataCache = {};
+
+  for (const folderPath of folders) {
+    try {
+      metadataCache[folderPath] = getDropboxFolderMetadata(service, folderPath);
+    } catch (e) {
+      // エラーが出ても続行（該当フォルダは空扱い）
+      metadataCache[folderPath] = {};
+    }
+  }
+
+  return metadataCache;
+}
+
+// 処理対象の段落を収集（パターンマッチ＆不一致検出）
+// metadataCache: Dropboxのハッシュ情報（オプション、ハッシュ比較する場合に渡す）
+function collectTargetParagraphs(paragraphs, pattern, metadataCache) {
   const targets = [];
+  const skipped = [];  // スキップした段落（完全一致）
   const unregisteredChars = new Set();
 
   for (let i = 0; i < paragraphs.length; i++) {
@@ -78,26 +144,66 @@ function collectTargetParagraphs(paragraphs, pattern, skipProcessed) {
         continue;
       }
 
-      // 重複チェック
-      if (skipProcessed && hasImageAtStart(para)) {
-        continue; // 処理済みなのでスキップ
-      }
+      const expectedFileName = `Face_${englishName}_${number}.png`;
+      const existingImage = getImageAtStart(para);
 
-      targets.push({
-        paragraph: para,
-        charName: charName,
-        englishName: englishName,
-        number: number
-      });
+      if (existingImage) {
+        // 既存画像がある場合: alt textをチェック
+        const altDesc = existingImage.getAltDescription();
+        const { fileName: existingFileName, hash: existingHash } = parseAltDescription(altDesc);
+
+        // ファイル名が一致するかチェック
+        if (existingFileName === expectedFileName) {
+          // ファイル名一致 → ハッシュもチェック
+          const folderPath = `${DROPBOX_FACES_PATH}/Face_${englishName}`;
+          const currentHash = metadataCache[folderPath] ? metadataCache[folderPath][expectedFileName] : null;
+
+          if (!currentHash || existingHash === currentHash) {
+            // ハッシュ取得できない or ハッシュ一致 → スキップ
+            skipped.push(para);
+            continue;
+          }
+
+          // ハッシュ不一致 → 画像更新
+          targets.push({
+            paragraph: para,
+            charName: charName,
+            englishName: englishName,
+            number: number,
+            existingImage: existingImage,
+            action: 'update_hash'  // 画像更新
+          });
+        } else {
+          // ファイル名不一致 → 更新対象
+          targets.push({
+            paragraph: para,
+            charName: charName,
+            englishName: englishName,
+            number: number,
+            existingImage: existingImage,
+            action: 'update_name'  // 番号変更
+          });
+        }
+      } else {
+        // 画像なし → 新規挿入
+        targets.push({
+          paragraph: para,
+          charName: charName,
+          englishName: englishName,
+          number: number,
+          existingImage: null,
+          action: 'insert'
+        });
+      }
     }
   }
 
-  return { targets, unregisteredChars };
+  return { targets, skipped, unregisteredChars };
 }
 
 // 結果をHTMLダイアログで表示
 function showResultDialog(result) {
-  const { inserted, skippedProcessed, errors, remaining, unregisteredChars, mode } = result;
+  const { inserted, updated, skippedProcessed, errors, remaining, unregisteredChars, mode } = result;
 
   let html = `
     <style>
@@ -106,6 +212,7 @@ function showResultDialog(result) {
       .section-title { font-weight: bold; margin-bottom: 8px; color: #333; }
       .stat { margin: 4px 0; }
       .stat-ok { color: #2e7d32; }
+      .stat-update { color: #7b1fa2; }
       .stat-skip { color: #f57c00; }
       .stat-error { color: #c62828; }
       .stat-remain { color: #1565c0; }
@@ -114,8 +221,9 @@ function showResultDialog(result) {
     </style>
     <div class="section">
       <div class="section-title">実行結果（${mode}）</div>
-      <div class="stat stat-ok">✓ 挿入: ${inserted}件</div>
-      <div class="stat stat-skip">⏭ スキップ（処理済み）: ${skippedProcessed}件</div>
+      <div class="stat stat-ok">✓ 新規挿入: ${inserted}件</div>
+      <div class="stat stat-update">🔄 更新: ${updated}件</div>
+      <div class="stat stat-skip">⏭ スキップ（一致）: ${skippedProcessed}件</div>
       <div class="stat stat-error">⚠ スキップ（エラー）: ${errors.length}件</div>
       <div class="stat stat-remain">📋 残り未処理: ${remaining}件</div>
     </div>
@@ -145,7 +253,7 @@ function showResultDialog(result) {
   }
 
   if (remaining > 0) {
-    html += `<div style="color:#666; font-size:12px;">※「次の10件を挿入」でさらに処理できます</div>`;
+    html += `<div style="color:#666; font-size:12px;">※「次の20件を挿入」でさらに処理できます</div>`;
   }
 
   const htmlOutput = HtmlService.createHtmlOutput(html)
@@ -159,11 +267,17 @@ function showResultDialog(result) {
 // バッチサイズ設定
 const BATCH_SIZE = 20;
 
-// 画像挿入の共通処理
-function processImageInsertions(targets, service, limit) {
+// 画像挿入の共通処理（挿入/更新対応、alt text保存）
+function processImageInsertions(targets, service, limit, metadataCache) {
   const toProcess = limit ? targets.slice(0, limit) : targets;
   let insertedCount = 0;
+  let updatedCount = 0;
   const errors = [];
+
+  // メタデータキャッシュがなければ作成
+  if (!metadataCache) {
+    metadataCache = {};
+  }
 
   for (const target of toProcess) {
     const fileName = `Face_${target.englishName}_${target.number}.png`;
@@ -171,15 +285,33 @@ function processImageInsertions(targets, service, limit) {
     const filePath = `${folderPath}/${fileName}`;
 
     try {
-      const image = getImageFromDropbox(service, filePath);
+      // 画像とハッシュを取得
+      const { image, hash } = getImageWithHashFromDropbox(service, filePath, metadataCache);
+
       if (image) {
+        // 既存画像があれば削除
+        if (target.existingImage) {
+          target.existingImage.removeFromParent();
+        }
+
+        // 新しい画像を挿入
         const insertedImage = target.paragraph.insertInlineImage(0, image);
+
         // 画像サイズを1/3に縮小
         const width = insertedImage.getWidth();
         const height = insertedImage.getHeight();
         insertedImage.setWidth(width / 3);
         insertedImage.setHeight(height / 3);
-        insertedCount++;
+
+        // alt textにファイル名:ハッシュを保存
+        const altDesc = createAltDescription(fileName, hash);
+        insertedImage.setAltDescription(altDesc);
+
+        if (target.action === 'insert') {
+          insertedCount++;
+        } else {
+          updatedCount++;
+        }
       } else {
         errors.push(`画像なし: ${fileName}`);
       }
@@ -188,10 +320,10 @@ function processImageInsertions(targets, service, limit) {
     }
   }
 
-  return { insertedCount, errors, processedCount: toProcess.length };
+  return { insertedCount, updatedCount, errors, processedCount: toProcess.length };
 }
 
-// 次の10件を挿入（バッチ処理）
+// 次の20件を挿入（バッチ処理）
 function insertNextBatch() {
   const service = getDropboxService();
 
@@ -205,8 +337,12 @@ function insertNextBatch() {
   const paragraphs = body.getParagraphs();
   const pattern = /【(.+?)】(\d+)/;
 
-  // 処理済みをスキップして未処理を収集
-  const { targets, unregisteredChars } = collectTargetParagraphs(paragraphs, pattern, true);
+  // 必要なフォルダを特定してメタデータを事前取得
+  const requiredFolders = scanRequiredFolders(paragraphs, pattern);
+  const metadataCache = prefetchMetadata(service, requiredFolders);
+
+  // 処理対象を収集（ファイル名不一致＆ハッシュ不一致も含む）
+  const { targets, skipped, unregisteredChars } = collectTargetParagraphs(paragraphs, pattern, metadataCache);
 
   if (targets.length === 0) {
     DocumentApp.getUi().alert('処理対象がありません。\n（全て処理済み、またはパターンに一致する行がありません）');
@@ -214,16 +350,13 @@ function insertNextBatch() {
   }
 
   // バッチサイズ分だけ処理
-  const { insertedCount, errors } = processImageInsertions(targets, service, BATCH_SIZE);
+  const { insertedCount, updatedCount, errors } = processImageInsertions(targets, service, BATCH_SIZE, metadataCache);
   const remaining = Math.max(0, targets.length - BATCH_SIZE);
-
-  // 処理済み件数をカウント（全段落から再計算）
-  const { targets: remainingTargets } = collectTargetParagraphs(paragraphs, pattern, true);
-  const skippedProcessed = paragraphs.filter(p => hasImageAtStart(p)).length;
 
   showResultDialog({
     inserted: insertedCount,
-    skippedProcessed: skippedProcessed - insertedCount, // 今回挿入した分を除く
+    updated: updatedCount,
+    skippedProcessed: skipped.length,
     errors: errors,
     remaining: remaining,
     unregisteredChars: unregisteredChars,
@@ -231,7 +364,7 @@ function insertNextBatch() {
   });
 }
 
-// 全件挿入（重複スキップ付き）
+// 全件挿入（不一致検出＆更新付き）
 function insertAllImages() {
   const service = getDropboxService();
 
@@ -245,8 +378,12 @@ function insertAllImages() {
   const paragraphs = body.getParagraphs();
   const pattern = /【(.+?)】(\d+)/;
 
-  // 処理済みをスキップして未処理を収集
-  const { targets, unregisteredChars } = collectTargetParagraphs(paragraphs, pattern, true);
+  // 必要なフォルダを特定してメタデータを事前取得
+  const requiredFolders = scanRequiredFolders(paragraphs, pattern);
+  const metadataCache = prefetchMetadata(service, requiredFolders);
+
+  // 処理対象を収集（ファイル名不一致＆ハッシュ不一致も含む）
+  const { targets, skipped, unregisteredChars } = collectTargetParagraphs(paragraphs, pattern, metadataCache);
 
   if (targets.length === 0) {
     DocumentApp.getUi().alert('処理対象がありません。\n（全て処理済み、またはパターンに一致する行がありません）');
@@ -258,7 +395,7 @@ function insertAllImages() {
     const ui = DocumentApp.getUi();
     const response = ui.alert(
       '確認',
-      `${targets.length}件の画像を挿入します。\n件数が多いため、処理に時間がかかる可能性があります。\n\n続行しますか？`,
+      `${targets.length}件の画像を処理します。\n件数が多いため、処理に時間がかかる可能性があります。\n\n続行しますか？`,
       ui.ButtonSet.YES_NO
     );
     if (response !== ui.Button.YES) {
@@ -267,19 +404,97 @@ function insertAllImages() {
   }
 
   // 全件処理
-  const { insertedCount, errors } = processImageInsertions(targets, service, null);
-
-  // 処理済み件数をカウント
-  const skippedProcessed = paragraphs.filter(p => hasImageAtStart(p)).length - insertedCount;
+  const { insertedCount, updatedCount, errors } = processImageInsertions(targets, service, null, metadataCache);
 
   showResultDialog({
     inserted: insertedCount,
-    skippedProcessed: skippedProcessed,
+    updated: updatedCount,
+    skippedProcessed: skipped.length,
     errors: errors,
     remaining: 0,
     unregisteredChars: unregisteredChars,
     mode: '全件'
   });
+}
+
+// Dropboxフォルダのメタデータを一括取得（content_hash含む、ページネーション対応）
+function getDropboxFolderMetadata(service, folderPath) {
+  const metadata = {};
+  let cursor = null;
+  let hasMore = true;
+
+  while (hasMore) {
+    let url, payload;
+
+    if (cursor) {
+      // 続きを取得
+      url = 'https://api.dropboxapi.com/2/files/list_folder/continue';
+      payload = JSON.stringify({ cursor: cursor });
+    } else {
+      // 最初のリクエスト
+      url = 'https://api.dropboxapi.com/2/files/list_folder';
+      payload = JSON.stringify({
+        path: folderPath,
+        recursive: false,
+        include_media_info: false,
+        include_deleted: false
+      });
+    }
+
+    const options = {
+      method: 'post',
+      headers: {
+        'Authorization': `Bearer ${service.getAccessToken()}`,
+        'Content-Type': 'application/json'
+      },
+      payload: payload,
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+
+    if (code === 200) {
+      const data = JSON.parse(response.getContentText());
+
+      for (const entry of data.entries) {
+        if (entry['.tag'] === 'file') {
+          // ファイル名をキーにしてcontent_hashを保存
+          const fileName = entry.name;
+          metadata[fileName] = entry.content_hash;
+        }
+      }
+
+      hasMore = data.has_more;
+      cursor = data.cursor;
+    } else if (code === 409) {
+      // フォルダが見つからない
+      return {};
+    } else {
+      throw new Error(`Dropbox metadata error: ${code}`);
+    }
+  }
+
+  return metadata;
+}
+
+// 画像とハッシュをDropboxから取得
+function getImageWithHashFromDropbox(service, filePath, metadataCache) {
+  const fileName = filePath.split('/').pop();
+  const folderPath = filePath.substring(0, filePath.lastIndexOf('/'));
+
+  // キャッシュからハッシュを取得（なければフォルダメタデータを取得）
+  let hash = null;
+  if (metadataCache[folderPath]) {
+    hash = metadataCache[folderPath][fileName];
+  } else {
+    metadataCache[folderPath] = getDropboxFolderMetadata(service, folderPath);
+    hash = metadataCache[folderPath][fileName];
+  }
+
+  // 画像をダウンロード
+  const image = getImageFromDropbox(service, filePath);
+  return { image, hash };
 }
 
 // Dropboxから画像を取得
@@ -377,6 +592,64 @@ function testDropboxConnection() {
   }
 }
 
+// ===== デバッグ用 =====
+// ドキュメント内の画像のalt textを確認
+function debugCheckAltText() {
+  const doc = DocumentApp.getActiveDocument();
+  const body = doc.getBody();
+  const paragraphs = body.getParagraphs();
+  const pattern = /【(.+?)】(\d+)/;
+
+  const results = [];
+  let count = 0;
+
+  for (const para of paragraphs) {
+    const text = para.getText();
+    const match = text.match(pattern);
+    if (match && hasImageAtStart(para)) {
+      const image = getImageAtStart(para);
+      const altDesc = image.getAltDescription();
+      results.push(`${match[1]}${match[2]}: "${altDesc || '(なし)'}"`);
+      count++;
+      if (count >= 10) break;  // 最大10件
+    }
+  }
+
+  if (results.length === 0) {
+    DocumentApp.getUi().alert('画像付きの行が見つかりません。');
+  } else {
+    DocumentApp.getUi().alert(`画像のalt text（最大10件）:\n\n${results.join('\n')}`);
+  }
+}
+
+// Dropboxのメタデータ（ハッシュ）を確認
+function debugCheckDropboxHash() {
+  const service = getDropboxService();
+
+  if (!service.hasAccess()) {
+    DocumentApp.getUi().alert('Dropboxに接続されていません。');
+    return;
+  }
+
+  // 最初のキャラクターのフォルダをテスト
+  const testFolder = `${DROPBOX_FACES_PATH}/Face_Giovanni`;
+
+  try {
+    const metadata = getDropboxFolderMetadata(service, testFolder);
+    const allFiles = Object.keys(metadata);
+    const files = allFiles.slice(0, 5);  // 最大5件表示
+
+    if (allFiles.length === 0) {
+      DocumentApp.getUi().alert(`フォルダ: ${testFolder}\n\nファイルが見つかりません。`);
+    } else {
+      const results = files.map(f => `${f}: ${metadata[f] ? metadata[f].substring(0, 16) + '...' : '(なし)'}`);
+      DocumentApp.getUi().alert(`フォルダ: ${testFolder}\n\n総ファイル数: ${allFiles.length}件\n\nハッシュ（最大5件表示）:\n${results.join('\n')}`);
+    }
+  } catch (e) {
+    DocumentApp.getUi().alert(`エラー: ${e.message}`);
+  }
+}
+
 // カスタムメニューを追加
 function onOpen() {
   DocumentApp.getUi()
@@ -388,5 +661,8 @@ function onOpen() {
     .addItem('全件挿入（重複スキップ）', 'insertAllImages')
     .addSeparator()
     .addItem('接続を解除', 'disconnectDropbox')
+    .addSeparator()
+    .addItem('[DEBUG] alt text確認', 'debugCheckAltText')
+    .addItem('[DEBUG] Dropboxハッシュ確認', 'debugCheckDropboxHash')
     .addToUi();
 }
