@@ -714,6 +714,56 @@ function testDropboxConnection() {
   }
 }
 
+// ===== コメント行の色付け =====
+// コメント行の色設定
+const COMMENT_COLOR_GRAY = '#999999';    // 通常のコメント行
+const COMMENT_COLOR_PURPLE = '#9a03ff';  // 特殊コメント行（コロン含む＆》で終わらない）
+
+// コメント行に色を適用
+function applyCommentColors() {
+  const doc = DocumentApp.getActiveDocument();
+  const body = doc.getBody();
+  const paragraphs = body.getParagraphs();
+
+  let grayCount = 0;
+  let purpleCount = 0;
+
+  for (const para of paragraphs) {
+    const text = para.getText();
+
+    // //で始まる行かチェック
+    if (!text.startsWith('//')) {
+      continue;
+    }
+
+    // 色を決定
+    let color;
+    const hasColon = text.includes(':') || text.includes('：');
+    const endsWithKagi = text.endsWith('》');
+
+    if (hasColon && !endsWithKagi) {
+      // コロンを含む＆》で終わらない → 紫色
+      color = COMMENT_COLOR_PURPLE;
+      purpleCount++;
+    } else {
+      // それ以外 → グレー
+      color = COMMENT_COLOR_GRAY;
+      grayCount++;
+    }
+
+    // 段落全体に色を適用
+    const textElement = para.editAsText();
+    textElement.setForegroundColor(color);
+  }
+
+  // 結果を表示
+  DocumentApp.getUi().alert(
+    `コメント行の色付け完了\n\n` +
+    `グレー（通常コメント）: ${grayCount}件\n` +
+    `紫色（特殊コメント）: ${purpleCount}件`
+  );
+}
+
 // ===== デバッグ用 =====
 // ドキュメント内の画像のalt textを確認
 function debugCheckAltText() {
@@ -781,6 +831,8 @@ function onOpen() {
     .addSeparator()
     .addItem('次の20件を挿入', 'insertNextBatch')
     .addItem('全件挿入（重複スキップ）', 'insertAllImages')
+    .addSeparator()
+    .addItem('コメント行に色を適用', 'applyCommentColors')
     .addSeparator()
     .addItem('接続を解除', 'disconnectDropbox')
     .addSeparator()
