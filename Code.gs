@@ -49,25 +49,19 @@ function authCallback(request) {
   }
 }
 
-// ===== メイン関数 =====
-function insertFaceImages() {
-  const service = getDropboxService();
+// ===== ユーティリティ =====
+// 段落の先頭に画像があるかチェック（重複防止用）
+function hasImageAtStart(paragraph) {
+  const numChildren = paragraph.getNumChildren();
+  if (numChildren === 0) return false;
+  const firstChild = paragraph.getChild(0);
+  return firstChild.getType() === DocumentApp.ElementType.INLINE_IMAGE;
+}
 
-  if (!service.hasAccess()) {
-    DocumentApp.getUi().alert('Dropboxに接続されていません。\n「顔画像挿入」→「Dropboxに接続」を実行してください。');
-    return;
-  }
-
-  const doc = DocumentApp.getActiveDocument();
-  const body = doc.getBody();
-  const paragraphs = body.getParagraphs();
-
-  // 【キャラクター名】番号 のパターン
-  const pattern = /【(.+?)】(\d+)/;
-  let insertedCount = 0;
-  let skippedCount = 0;
-  const errors = [];
-  const unregisteredChars = new Set(); // 未登録キャラクターを重複なく記録
+// 処理対象の段落を収集（パターンマッチ＆画像なし）
+function collectTargetParagraphs(paragraphs, pattern, skipProcessed) {
+  const targets = [];
+  const unregisteredChars = new Set();
 
   for (let i = 0; i < paragraphs.length; i++) {
     const para = paragraphs[i];
@@ -79,52 +73,213 @@ function insertFaceImages() {
       const number = match[2].padStart(3, '0');
       const englishName = CHARACTER_MAP[charName];
 
-      if (englishName) {
-        const fileName = `Face_${englishName}_${number}.png`;
-        const folderPath = `${DROPBOX_FACES_PATH}/Face_${englishName}`;
-        const filePath = `${folderPath}/${fileName}`;
-
-        try {
-          const image = getImageFromDropbox(service, filePath);
-          if (image) {
-            const insertedImage = para.insertInlineImage(0, image);
-            // 画像サイズを1/3に縮小
-            const width = insertedImage.getWidth();
-            const height = insertedImage.getHeight();
-            insertedImage.setWidth(width / 3);
-            insertedImage.setHeight(height / 3);
-            insertedCount++;
-          } else {
-            errors.push(`画像なし: ${fileName}`);
-            skippedCount++;
-          }
-        } catch (e) {
-          errors.push(`エラー: ${fileName} - ${e.message}`);
-          skippedCount++;
-        }
-      } else {
-        unregisteredChars.add(charName); // 未登録キャラを記録
-        skippedCount++;
+      if (!englishName) {
+        unregisteredChars.add(charName);
+        continue;
       }
+
+      // 重複チェック
+      if (skipProcessed && hasImageAtStart(para)) {
+        continue; // 処理済みなのでスキップ
+      }
+
+      targets.push({
+        paragraph: para,
+        charName: charName,
+        englishName: englishName,
+        number: number
+      });
     }
   }
 
-  // 結果を表示
-  let message = `完了！\n挿入: ${insertedCount}件\nスキップ: ${skippedCount}件`;
+  return { targets, unregisteredChars };
+}
 
-  // 未登録キャラクターを表示
-  if (unregisteredChars.size > 0) {
-    const charList = Array.from(unregisteredChars).join('、');
-    message += `\n\n【未登録キャラクター】\n${charList}\n※ CHARACTER_MAP に追加してください`;
-  }
+// 結果をHTMLダイアログで表示
+function showResultDialog(result) {
+  const { inserted, skippedProcessed, errors, remaining, unregisteredChars, mode } = result;
+
+  let html = `
+    <style>
+      body { font-family: sans-serif; font-size: 14px; margin: 0; padding: 16px; }
+      .section { margin-bottom: 16px; }
+      .section-title { font-weight: bold; margin-bottom: 8px; color: #333; }
+      .stat { margin: 4px 0; }
+      .stat-ok { color: #2e7d32; }
+      .stat-skip { color: #f57c00; }
+      .stat-error { color: #c62828; }
+      .stat-remain { color: #1565c0; }
+      .list { max-height: 150px; overflow-y: auto; background: #f5f5f5; padding: 8px; border-radius: 4px; font-size: 12px; }
+      .list-item { margin: 2px 0; }
+    </style>
+    <div class="section">
+      <div class="section-title">実行結果（${mode}）</div>
+      <div class="stat stat-ok">✓ 挿入: ${inserted}件</div>
+      <div class="stat stat-skip">⏭ スキップ（処理済み）: ${skippedProcessed}件</div>
+      <div class="stat stat-error">⚠ スキップ（エラー）: ${errors.length}件</div>
+      <div class="stat stat-remain">📋 残り未処理: ${remaining}件</div>
+    </div>
+  `;
 
   if (errors.length > 0) {
-    message += `\n\nエラー詳細:\n${errors.slice(0, 10).join('\n')}`;
-    if (errors.length > 10) {
-      message += `\n...他 ${errors.length - 10}件`;
+    html += `
+      <div class="section">
+        <div class="section-title">エラー詳細</div>
+        <div class="list">
+          ${errors.map(e => `<div class="list-item">• ${e}</div>`).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  if (unregisteredChars.size > 0) {
+    const charList = Array.from(unregisteredChars);
+    html += `
+      <div class="section">
+        <div class="section-title">未登録キャラクター（CHARACTER_MAPに追加してください）</div>
+        <div class="list">
+          ${charList.map(c => `<div class="list-item">• ${c}</div>`).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  if (remaining > 0) {
+    html += `<div style="color:#666; font-size:12px;">※「次の10件を挿入」でさらに処理できます</div>`;
+  }
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(400)
+    .setHeight(350);
+  DocumentApp.getUi().showModalDialog(htmlOutput, '顔画像挿入 - 結果');
+}
+
+// ===== メイン関数 =====
+
+// バッチサイズ設定
+const BATCH_SIZE = 20;
+
+// 画像挿入の共通処理
+function processImageInsertions(targets, service, limit) {
+  const toProcess = limit ? targets.slice(0, limit) : targets;
+  let insertedCount = 0;
+  const errors = [];
+
+  for (const target of toProcess) {
+    const fileName = `Face_${target.englishName}_${target.number}.png`;
+    const folderPath = `${DROPBOX_FACES_PATH}/Face_${target.englishName}`;
+    const filePath = `${folderPath}/${fileName}`;
+
+    try {
+      const image = getImageFromDropbox(service, filePath);
+      if (image) {
+        const insertedImage = target.paragraph.insertInlineImage(0, image);
+        // 画像サイズを1/3に縮小
+        const width = insertedImage.getWidth();
+        const height = insertedImage.getHeight();
+        insertedImage.setWidth(width / 3);
+        insertedImage.setHeight(height / 3);
+        insertedCount++;
+      } else {
+        errors.push(`画像なし: ${fileName}`);
+      }
+    } catch (e) {
+      errors.push(`エラー: ${fileName} - ${e.message}`);
     }
   }
-  DocumentApp.getUi().alert(message);
+
+  return { insertedCount, errors, processedCount: toProcess.length };
+}
+
+// 次の10件を挿入（バッチ処理）
+function insertNextBatch() {
+  const service = getDropboxService();
+
+  if (!service.hasAccess()) {
+    DocumentApp.getUi().alert('Dropboxに接続されていません。\n「顔画像挿入」→「Dropboxに接続」を実行してください。');
+    return;
+  }
+
+  const doc = DocumentApp.getActiveDocument();
+  const body = doc.getBody();
+  const paragraphs = body.getParagraphs();
+  const pattern = /【(.+?)】(\d+)/;
+
+  // 処理済みをスキップして未処理を収集
+  const { targets, unregisteredChars } = collectTargetParagraphs(paragraphs, pattern, true);
+
+  if (targets.length === 0) {
+    DocumentApp.getUi().alert('処理対象がありません。\n（全て処理済み、またはパターンに一致する行がありません）');
+    return;
+  }
+
+  // バッチサイズ分だけ処理
+  const { insertedCount, errors } = processImageInsertions(targets, service, BATCH_SIZE);
+  const remaining = Math.max(0, targets.length - BATCH_SIZE);
+
+  // 処理済み件数をカウント（全段落から再計算）
+  const { targets: remainingTargets } = collectTargetParagraphs(paragraphs, pattern, true);
+  const skippedProcessed = paragraphs.filter(p => hasImageAtStart(p)).length;
+
+  showResultDialog({
+    inserted: insertedCount,
+    skippedProcessed: skippedProcessed - insertedCount, // 今回挿入した分を除く
+    errors: errors,
+    remaining: remaining,
+    unregisteredChars: unregisteredChars,
+    mode: `バッチ ${BATCH_SIZE}件`
+  });
+}
+
+// 全件挿入（重複スキップ付き）
+function insertAllImages() {
+  const service = getDropboxService();
+
+  if (!service.hasAccess()) {
+    DocumentApp.getUi().alert('Dropboxに接続されていません。\n「顔画像挿入」→「Dropboxに接続」を実行してください。');
+    return;
+  }
+
+  const doc = DocumentApp.getActiveDocument();
+  const body = doc.getBody();
+  const paragraphs = body.getParagraphs();
+  const pattern = /【(.+?)】(\d+)/;
+
+  // 処理済みをスキップして未処理を収集
+  const { targets, unregisteredChars } = collectTargetParagraphs(paragraphs, pattern, true);
+
+  if (targets.length === 0) {
+    DocumentApp.getUi().alert('処理対象がありません。\n（全て処理済み、またはパターンに一致する行がありません）');
+    return;
+  }
+
+  // 件数が多い場合は警告
+  if (targets.length > 50) {
+    const ui = DocumentApp.getUi();
+    const response = ui.alert(
+      '確認',
+      `${targets.length}件の画像を挿入します。\n件数が多いため、処理に時間がかかる可能性があります。\n\n続行しますか？`,
+      ui.ButtonSet.YES_NO
+    );
+    if (response !== ui.Button.YES) {
+      return;
+    }
+  }
+
+  // 全件処理
+  const { insertedCount, errors } = processImageInsertions(targets, service, null);
+
+  // 処理済み件数をカウント
+  const skippedProcessed = paragraphs.filter(p => hasImageAtStart(p)).length - insertedCount;
+
+  showResultDialog({
+    inserted: insertedCount,
+    skippedProcessed: skippedProcessed,
+    errors: errors,
+    remaining: 0,
+    unregisteredChars: unregisteredChars,
+    mode: '全件'
+  });
 }
 
 // Dropboxから画像を取得
@@ -229,7 +384,8 @@ function onOpen() {
     .addItem('Dropboxに接続', 'connectToDropbox')
     .addItem('接続をテスト', 'testDropboxConnection')
     .addSeparator()
-    .addItem('画像を挿入する', 'insertFaceImages')
+    .addItem('次の20件を挿入', 'insertNextBatch')
+    .addItem('全件挿入（重複スキップ）', 'insertAllImages')
     .addSeparator()
     .addItem('接続を解除', 'disconnectDropbox')
     .addToUi();
