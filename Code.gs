@@ -102,7 +102,8 @@ function scanRequiredFolders(paragraphs, pattern) {
     if (match) {
       // 【Wi】34無 → charName="Wi", suffix="無"
       // フォルダは元キャラ(Wi)、ファイル名は複合(Wi無→Wi_nohood)
-      const charName = match[1];
+      // ※ 前後の空白（全角含む）を除去
+      const charName = match[1].trim().replace(/[\s　]+/g, '');
       const baseEnglishName = CHARACTER_MAP[charName];  // フォルダ用
       if (baseEnglishName) {
         const folderPath = `${DROPBOX_FACES_PATH}/Face_${baseEnglishName}`;
@@ -145,8 +146,9 @@ function collectTargetParagraphs(paragraphs, pattern, metadataCache) {
     if (match) {
       // 【Wi】34無 → charName="Wi", suffix="無", effectiveCharName="Wi無"
       // フォルダは元キャラ(Wi→Wi)、ファイル名は複合(Wi無→Wi_nohood)
-      const charName = match[1];
-      const suffix = match[3] || '';
+      // ※ 前後の空白（全角含む）を除去
+      const charName = match[1].trim().replace(/[\s　]+/g, '');
+      const suffix = (match[3] || '').trim().replace(/[\s　]+/g, '');
       const effectiveCharName = charName + suffix;
 
       // ベース名（フォルダ用）と複合名（ファイル名用）
