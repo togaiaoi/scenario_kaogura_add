@@ -719,6 +719,59 @@ function testDropboxConnection() {
 const COMMENT_COLOR_GRAY = '#999999';    // 通常のコメント行
 const COMMENT_COLOR_PURPLE = '#9a03ff';  // 特殊コメント行（コロン含む＆》で終わらない）
 
+// 黒字のまま維持するキーワード（//と：の間にこれらが含まれる場合はスキップ）
+// ※アルファベットは半角小文字で記載（全角/半角、大文字/小文字は自動で正規化される）
+const COMMENT_SKIP_KEYWORDS = [
+  'マップid',
+  'チャプター',
+  'se',
+  'bgm',
+  '設定',
+  'todo',
+  'r-code',
+  'アイテム',
+  '通知',
+  '入手',
+  'メモ',
+  '仕様',
+  // ↓ 新しいキーワードはここに追加
+];
+
+// テキストを正規化（全角英数→半角、大文字→小文字）
+function normalizeText(text) {
+  // 全角英数字→半角英数字
+  let normalized = text.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function(s) {
+    return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
+  });
+  // 大文字→小文字
+  normalized = normalized.toLowerCase();
+  return normalized;
+}
+
+// //とコロンの間のテキストを取得
+function getTextBetweenSlashAndColon(text) {
+  // //を除去
+  const afterSlash = text.substring(2);
+  // 最初のコロン（半角or全角）の位置を探す
+  const colonIndex1 = afterSlash.indexOf(':');
+  const colonIndex2 = afterSlash.indexOf('：');
+
+  let colonIndex = -1;
+  if (colonIndex1 === -1) {
+    colonIndex = colonIndex2;
+  } else if (colonIndex2 === -1) {
+    colonIndex = colonIndex1;
+  } else {
+    colonIndex = Math.min(colonIndex1, colonIndex2);
+  }
+
+  if (colonIndex === -1) {
+    return null;  // コロンがない
+  }
+
+  return afterSlash.substring(0, colonIndex);
+}
+
 // コメント行に色を適用
 function applyCommentColors() {
   const doc = DocumentApp.getActiveDocument();
@@ -727,6 +780,7 @@ function applyCommentColors() {
 
   let grayCount = 0;
   let purpleCount = 0;
+  let skippedCount = 0;
 
   for (const para of paragraphs) {
     const text = para.getText();
@@ -734,6 +788,17 @@ function applyCommentColors() {
     // //で始まる行かチェック
     if (!text.startsWith('//')) {
       continue;
+    }
+
+    // //とコロンの間にスキップキーワードが含まれているかチェック
+    const betweenText = getTextBetweenSlashAndColon(text);
+    if (betweenText !== null) {
+      const normalizedBetween = normalizeText(betweenText);
+      const shouldSkip = COMMENT_SKIP_KEYWORDS.some(keyword => normalizedBetween.includes(keyword));
+      if (shouldSkip) {
+        skippedCount++;
+        continue;  // 黒字のまま維持
+      }
     }
 
     // 色を決定
@@ -760,7 +825,8 @@ function applyCommentColors() {
   DocumentApp.getUi().alert(
     `コメント行の色付け完了\n\n` +
     `グレー（通常コメント）: ${grayCount}件\n` +
-    `紫色（特殊コメント）: ${purpleCount}件`
+    `紫色（特殊コメント）: ${purpleCount}件\n` +
+    `スキップ（黒字維持）: ${skippedCount}件`
   );
 }
 
