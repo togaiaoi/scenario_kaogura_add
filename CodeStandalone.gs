@@ -1,93 +1,13 @@
 // ===== スタンドアロン版 - 複数ドキュメント自動処理 =====
-// このスクリプトは独立したGASプロジェクトとして使用します
+// 設定は Config.gs に記載されています
+//
 // 使い方:
-//   1. setupAutoProcessing() を実行して初回処理＆トリガー設定
-//   2. 以降は15分おきに自動実行されます
-//   3. 停止したい場合は removeAutoProcessingTrigger() を実行
-
-// ===== 設定 =====
-// Dropbox App Consoleで取得した値を入力
-const DROPBOX_CLIENT_ID = 'ここにApp keyを貼り付け';
-const DROPBOX_CLIENT_SECRET = 'ここにApp secretを貼り付け';
-
-// Dropbox上の画像フォルダパス
-const DROPBOX_FACES_PATH = '/少年期の終り_画像共有/img/faces';
-
-// No Image画像のDropbox共有リンク（画像が見つからない時に使用）
-const NOIMAGE_URL = 'https://www.dropbox.com/scl/fi/ny6cm3boatvpe0s5axg5h/noimage.jpg?rlkey=vcg3cjs1ytfgarx059m191l7u&dl=1';
-// No Image画像の表示サイズ（通常の顔画像と同じサイズに設定）
-const NOIMAGE_SIZE = 48;
-
-// キャラクター名→英語名の対応表（追加可能）
-const CHARACTER_MAP = {
-  'ジョバンニ': 'Giovanni',
-  'カムパネルラ': 'Campanella',
-  'ドク': 'Doc',
-  'デイヴ': 'Dave',
-  'ケイト': 'Kate',
-  'マーク': 'Mark',
-  'モーリィ': 'Mollie',
-  'ラビ': 'Rabi',
-  'Wi': 'Wi',
-  'Wi無': 'Wi_nohood',  // 【Wi】34無 → Wi無として解釈
-  'Ｗi無': 'Wi_nohood',
-  'ユミ': 'Yumi',
-  'ケイト黒': 'Kate_BH',
-  'ラブ': 'Love',
-  'ラブ面': 'Love_fullface',
-  // ↓ 新しいキャラクターはここに追加
-};
-
-// ===== 処理対象ドキュメント =====
-// 処理対象のドキュメントIDリスト
-// ドキュメントURLの /d/ と /edit の間の文字列がドキュメントID
-// 例: https://docs.google.com/document/d/XXXXXXXXXXXXXXX/edit → XXXXXXXXXXXXXXX
-const TARGET_DOCUMENT_IDS = [
-  // { id: 'ドキュメントID', name: 'ドキュメント名（ログ用）' }
-  { id: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', name: 'シナリオ1' },
-  { id: 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy', name: 'シナリオ2' },
-  // ↓ 新しいドキュメントはここに追加
-];
-
-// バッチサイズ設定
-const BATCH_SIZE = 20;
-
-// 定期実行の間隔（分）
-const AUTO_PROCESS_INTERVAL_MINUTES = 15;
-
-// ログ保存用スプレッドシートID（空欄ならログ保存しない）
-// スプレッドシートURLの /d/ と /edit の間の文字列がID
-const LOG_SPREADSHEET_ID = '1I-Quc1r46_e6VFPlidIADoiJ7NspfJ5VHwxHe3kt0PQ';
-
-// エラー通知メールの送信先（空欄ならメール送信しない）
-const ERROR_NOTIFICATION_EMAIL = '';  // 例: 'ono@wss.tokyo'
-
-// パターン定義: 【キャラクター名】番号 または 【キャラクター名】番号X（Xは1文字のサフィックス）
-const FACE_PATTERN = /【(.+?)】(\d+)(.)?/;
-
-// ===== コメント行の色付け設定 =====
-const COMMENT_COLOR_GRAY = '#999999';    // 通常のコメント行
-const COMMENT_COLOR_PURPLE = '#9a03ff';  // 特殊コメント行（コロン含む＆》で終わらない）
-
-// 黒字のまま維持するキーワード（//と：の間にこれらが含まれる場合はスキップ）
-// ※アルファベットは半角小文字で記載（全角/半角、大文字/小文字は自動で正規化される）
-const COMMENT_SKIP_KEYWORDS = [
-  'マップid',
-  'チャプター',
-  'se',
-  'bgm',
-  'bgs',
-  '設定',
-  'todo',
-  'r-code',
-  'アイテム',
-  '通知',
-  '入手',
-  'メモ',
-  '仕様',
-  '実績',
-  // ↓ 新しいキーワードはここに追加
-];
+//   1. Config.gs で設定を編集
+//   2. connectToDropbox() でDropbox認証
+//   3. processDocument0() 等で初回処理（1ドキュメントずつ）
+//   4. setupAutoProcessing() でトリガー設定
+//   5. 以降は15分おきに自動実行されます
+//   6. 停止したい場合は removeAutoProcessingTrigger() を実行
 
 // ===== 自動処理メイン関数 =====
 
@@ -350,6 +270,7 @@ function saveLogToSpreadsheet(startTime, elapsed, results) {
         // ヘッダー行を追加
         sheet.appendRow([
           '実行日時',
+          '処理時間(秒)',
           'ドキュメント',
           '画像挿入',
           '画像更新',
@@ -361,7 +282,7 @@ function saveLogToSpreadsheet(startTime, elapsed, results) {
           '色スキップ',
           'エラー'
         ]);
-        sheet.getRange(1, 1, 1, 11).setFontWeight('bold');
+        sheet.getRange(1, 1, 1, 12).setFontWeight('bold');
       }
 
       const timestamp = Utilities.formatDate(startTime, 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss');
@@ -372,6 +293,7 @@ function saveLogToSpreadsheet(startTime, elapsed, results) {
           // エラーの場合
           sheet.appendRow([
             timestamp,
+            elapsed.toFixed(1),
             doc.name,
             '', '', '', '', '',
             '', '', '',
@@ -382,6 +304,7 @@ function saveLogToSpreadsheet(startTime, elapsed, results) {
           // 正常の場合
           sheet.appendRow([
             timestamp,
+            elapsed.toFixed(1),
             doc.name,
             doc.images.inserted,
             doc.images.updated,
@@ -440,6 +363,21 @@ ${errors.map((e, i) => `${i + 1}. ${e}`).join('\n')}
   } catch (e) {
     console.log(`メール送信エラー: ${e.message}`);
   }
+}
+
+/**
+ * メール送信テスト（権限承認用）
+ * 初回実行時に権限承認ダイアログが出ます
+ */
+function testEmailNotification() {
+  if (!ERROR_NOTIFICATION_EMAIL) {
+    console.log('ERROR_NOTIFICATION_EMAIL が未設定です。メールアドレスを設定してください。');
+    return;
+  }
+
+  const testErrors = ['テストエラー1: これはテストです', 'テストエラー2: 正常に受信できれば成功'];
+  sendErrorNotification(new Date(), testErrors);
+  console.log('テストメールを送信しました。受信を確認してください。');
 }
 
 // ===== トリガー管理 =====
