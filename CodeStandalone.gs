@@ -55,6 +55,13 @@ const BATCH_SIZE = 20;
 // 定期実行の間隔（分）
 const AUTO_PROCESS_INTERVAL_MINUTES = 15;
 
+// ログ保存用スプレッドシートID（空欄ならログ保存しない）
+// スプレッドシートURLの /d/ と /edit の間の文字列がID
+const LOG_SPREADSHEET_ID = '1I-Quc1r46_e6VFPlidIADoiJ7NspfJ5VHwxHe3kt0PQ';
+
+// エラー通知メールの送信先（空欄ならメール送信しない）
+const ERROR_NOTIFICATION_EMAIL = '';  // 例: 'ono@wss.tokyo'
+
 // パターン定義: 【キャラクター名】番号 または 【キャラクター名】番号X（Xは1文字のサフィックス）
 const FACE_PATTERN = /【(.+?)】(\d+)(.)?/;
 
@@ -242,6 +249,9 @@ function processAllDocumentsBatch() {
   console.log(`画像合計: 挿入${results.totalImages.inserted} 更新${results.totalImages.updated} NoImage${results.totalImages.noImage} スキップ${results.totalImages.skipped} エラー${results.totalImages.errors}`);
   console.log(`色付け合計: グレー${results.totalColors.gray} 紫${results.totalColors.purple} スキップ${results.totalColors.skipped}`);
 
+  // スプレッドシートにログ保存
+  saveLogToSpreadsheet(startTime, elapsed, results);
+
   return results;
 }
 
@@ -318,6 +328,118 @@ function applyCommentColorsForParagraphs(paragraphs) {
   }
 
   return { gray: grayCount, purple: purpleCount, skipped: skippedCount };
+}
+
+// ===== ログ保存 =====
+
+/**
+ * 処理結果をスプレッドシートに保存（ドキュメントごとに1行）
+ */
+function saveLogToSpreadsheet(startTime, elapsed, results) {
+  const errors = [];
+
+  // スプレッドシートにログ保存
+  if (LOG_SPREADSHEET_ID) {
+    try {
+      const ss = SpreadsheetApp.openById(LOG_SPREADSHEET_ID);
+      let sheet = ss.getSheetByName('実行ログ');
+
+      // シートがなければ作成
+      if (!sheet) {
+        sheet = ss.insertSheet('実行ログ');
+        // ヘッダー行を追加
+        sheet.appendRow([
+          '実行日時',
+          'ドキュメント',
+          '画像挿入',
+          '画像更新',
+          'NoImage',
+          '画像スキップ',
+          '画像エラー',
+          '色グレー',
+          '色紫',
+          '色スキップ',
+          'エラー'
+        ]);
+        sheet.getRange(1, 1, 1, 11).setFontWeight('bold');
+      }
+
+      const timestamp = Utilities.formatDate(startTime, 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss');
+
+      // ドキュメントごとに1行追加
+      for (const doc of results.documents) {
+        if (doc.error) {
+          // エラーの場合
+          sheet.appendRow([
+            timestamp,
+            doc.name,
+            '', '', '', '', '',
+            '', '', '',
+            doc.error
+          ]);
+          errors.push(`${doc.name}: ${doc.error}`);
+        } else {
+          // 正常の場合
+          sheet.appendRow([
+            timestamp,
+            doc.name,
+            doc.images.inserted,
+            doc.images.updated,
+            doc.images.noImage,
+            doc.images.skipped,
+            doc.images.errors.length,
+            doc.colors.gray,
+            doc.colors.purple,
+            doc.colors.skipped,
+            doc.images.errors.length > 0 ? doc.images.errors.join(', ') : ''
+          ]);
+
+          // 画像エラーがあれば記録
+          if (doc.images.errors.length > 0) {
+            errors.push(`${doc.name}: ${doc.images.errors.join(', ')}`);
+          }
+        }
+      }
+
+      console.log('ログをスプレッドシートに保存しました');
+
+    } catch (e) {
+      console.log(`ログ保存エラー: ${e.message}`);
+      errors.push(`ログ保存エラー: ${e.message}`);
+    }
+  }
+
+  // エラーがあればメール送信
+  if (errors.length > 0 && ERROR_NOTIFICATION_EMAIL) {
+    sendErrorNotification(startTime, errors);
+  }
+}
+
+/**
+ * エラー通知メールを送信
+ */
+function sendErrorNotification(startTime, errors) {
+  try {
+    const timestamp = Utilities.formatDate(startTime, 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss');
+    const subject = `[顔画像自動処理] エラー検知 (${errors.length}件)`;
+    const body = `顔画像自動処理でエラーが発生しました。
+
+実行日時: ${timestamp}
+エラー件数: ${errors.length}件
+
+【エラー詳細】
+${errors.map((e, i) => `${i + 1}. ${e}`).join('\n')}
+
+---
+このメールは自動送信されています。
+`;
+
+    MailApp.sendEmail(ERROR_NOTIFICATION_EMAIL, subject, body);
+    console.log(`エラー通知メールを送信しました: ${ERROR_NOTIFICATION_EMAIL}`);
+
+  } catch (e) {
+    console.log(`メール送信エラー: ${e.message}`);
+  }
 }
 
 // ===== トリガー管理 =====
