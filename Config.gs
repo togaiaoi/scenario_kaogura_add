@@ -51,7 +51,7 @@ const TARGET_DOCUMENT_IDS = [
 const BATCH_SIZE = 20;
 
 // 定期実行の間隔（分）
-const AUTO_PROCESS_INTERVAL_MINUTES = 15;
+const AUTO_PROCESS_INTERVAL_MINUTES = 5;
 
 // ===== ログ・通知設定 =====
 // ログ保存用スプレッドシートID（空欄ならログ保存しない）

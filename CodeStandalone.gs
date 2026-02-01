@@ -27,13 +27,13 @@ function setupAutoProcessing() {
   // 既存のトリガーを削除
   removeAutoProcessingTrigger();
 
-  // 新しいトリガーを設定（15分おき）
+  // 新しいトリガーを設定（5分おき、1ドキュメントずつローテーション）
   ScriptApp.newTrigger('autoProcessAllDocuments')
     .timeBased()
     .everyMinutes(AUTO_PROCESS_INTERVAL_MINUTES)
     .create();
 
-  console.log(`トリガーを設定しました（${AUTO_PROCESS_INTERVAL_MINUTES}分おき）`);
+  console.log(`トリガーを設定しました（${AUTO_PROCESS_INTERVAL_MINUTES}分おき、1ドキュメントずつローテーション処理）`);
   console.log('');
   console.log('【次のステップ】');
   console.log('各ドキュメントの初回処理を行ってください：');
@@ -96,7 +96,7 @@ function processDocument9() { if (TARGET_DOCUMENT_IDS[9]) processOneDocumentFull
 
 /**
  * 定期実行される関数（トリガーから呼ばれる）
- * 全ドキュメントを20件バッチで処理
+ * 1ドキュメントずつローテーション処理
  */
 function autoProcessAllDocuments() {
   const service = getDropboxService();
@@ -107,11 +107,86 @@ function autoProcessAllDocuments() {
   }
 
   console.log('自動処理を開始します...');
-  processAllDocumentsBatch();
+  processOneDocumentRotation();
 }
 
 /**
- * 全ドキュメントを20件バッチで処理（定期実行用）
+ * 1ドキュメントのみ処理（ローテーション方式）
+ */
+function processOneDocumentRotation() {
+  const service = getDropboxService();
+  const startTime = new Date();
+
+  // 現在のドキュメントインデックスを取得
+  const currentIndex = getCurrentDocumentIndex();
+
+  if (TARGET_DOCUMENT_IDS.length === 0) {
+    console.log('処理対象のドキュメントが設定されていません');
+    return;
+  }
+
+  const docInfo = TARGET_DOCUMENT_IDS[currentIndex];
+  console.log(`処理中 [${currentIndex + 1}/${TARGET_DOCUMENT_IDS.length}]: ${docInfo.name}`);
+
+  const results = {
+    documents: [],
+    totalImages: { inserted: 0, updated: 0, noImage: 0, skipped: 0, errors: 0 },
+    totalColors: { gray: 0, purple: 0, skipped: 0 }
+  };
+
+  const docResult = {
+    name: docInfo.name,
+    images: null,
+    colors: null,
+    error: null
+  };
+
+  try {
+    const doc = DocumentApp.openById(docInfo.id);
+    const body = doc.getBody();
+    const paragraphs = body.getParagraphs();
+
+    // 画像挿入処理（20件バッチ）
+    const imageResult = processImagesForDocument(paragraphs, service, false);
+    docResult.images = imageResult;
+    results.totalImages.inserted += imageResult.inserted;
+    results.totalImages.updated += imageResult.updated;
+    results.totalImages.noImage += imageResult.noImage;
+    results.totalImages.skipped += imageResult.skipped;
+    results.totalImages.errors += imageResult.errors.length;
+
+    // コメント色付け処理
+    const colorResult = applyCommentColorsForParagraphs(paragraphs);
+    docResult.colors = colorResult;
+    results.totalColors.gray += colorResult.gray;
+    results.totalColors.purple += colorResult.purple;
+    results.totalColors.skipped += colorResult.skipped;
+
+    console.log(`  画像: 挿入${imageResult.inserted} 更新${imageResult.updated} NoImage${imageResult.noImage} スキップ${imageResult.skipped}`);
+    console.log(`  色付け: グレー${colorResult.gray} 紫${colorResult.purple} 黒字${colorResult.skipped}`);
+
+  } catch (e) {
+    docResult.error = e.message;
+    console.log(`  エラー: ${e.message}`);
+  }
+
+  results.documents.push(docResult);
+
+  const elapsed = (new Date() - startTime) / 1000;
+  console.log(`処理完了（${elapsed.toFixed(1)}秒）`);
+
+  // 次のドキュメントインデックスを保存
+  const nextIndex = (currentIndex + 1) % TARGET_DOCUMENT_IDS.length;
+  setCurrentDocumentIndex(nextIndex);
+
+  // スプレッドシートにログ保存
+  saveLogToSpreadsheet(startTime, elapsed, results);
+
+  return results;
+}
+
+/**
+ * 全ドキュメントを20件バッチで処理（手動実行用・旧方式）
  */
 function processAllDocumentsBatch() {
   const service = getDropboxService();
@@ -384,6 +459,31 @@ function testEmailNotification() {
 }
 
 // ===== トリガー管理 =====
+
+/**
+ * 現在のドキュメントインデックスを取得
+ */
+function getCurrentDocumentIndex() {
+  const props = PropertiesService.getScriptProperties();
+  const index = props.getProperty('currentDocumentIndex');
+  return index ? parseInt(index, 10) : 0;
+}
+
+/**
+ * 次のドキュメントインデックスを保存
+ */
+function setCurrentDocumentIndex(index) {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('currentDocumentIndex', index.toString());
+}
+
+/**
+ * ドキュメントインデックスをリセット（手動実行用）
+ */
+function resetDocumentIndex() {
+  setCurrentDocumentIndex(0);
+  console.log('ドキュメントインデックスを0にリセットしました');
+}
 
 /**
  * 自動処理トリガーを削除
