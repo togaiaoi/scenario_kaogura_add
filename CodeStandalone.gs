@@ -71,7 +71,7 @@ function processOneDocumentFull(docId) {
 
     // コメント色付け処理
     const colorResult = applyCommentColorsForParagraphs(paragraphs);
-    console.log(`  色付け: グレー${colorResult.gray} 紫${colorResult.purple} スキップ${colorResult.skipped}`);
+    console.log(`  色付け: グレー${colorResult.gray} 紫${colorResult.purple} 黒字${colorResult.skipped}`);
 
     const elapsed = (new Date() - startTime) / 1000;
     console.log(`完了（${elapsed.toFixed(1)}秒）`);
@@ -154,7 +154,7 @@ function processAllDocumentsBatch() {
       results.totalColors.skipped += colorResult.skipped;
 
       console.log(`  画像: 挿入${imageResult.inserted} 更新${imageResult.updated} NoImage${imageResult.noImage} スキップ${imageResult.skipped}`);
-      console.log(`  色付け: グレー${colorResult.gray} 紫${colorResult.purple} スキップ${colorResult.skipped}`);
+      console.log(`  色付け: グレー${colorResult.gray} 紫${colorResult.purple} 黒字${colorResult.skipped}`);
 
     } catch (e) {
       docResult.error = e.message;
@@ -167,7 +167,7 @@ function processAllDocumentsBatch() {
   const elapsed = (new Date() - startTime) / 1000;
   console.log(`\n処理完了（${elapsed.toFixed(1)}秒）`);
   console.log(`画像合計: 挿入${results.totalImages.inserted} 更新${results.totalImages.updated} NoImage${results.totalImages.noImage} スキップ${results.totalImages.skipped} エラー${results.totalImages.errors}`);
-  console.log(`色付け合計: グレー${results.totalColors.gray} 紫${results.totalColors.purple} スキップ${results.totalColors.skipped}`);
+  console.log(`色付け合計: グレー${results.totalColors.gray} 紫${results.totalColors.purple} 黒字${results.totalColors.skipped}`);
 
   // スプレッドシートにログ保存
   saveLogToSpreadsheet(startTime, elapsed, results);
@@ -219,12 +219,15 @@ function applyCommentColorsForParagraphs(paragraphs) {
       continue;
     }
 
-    // スキップキーワードチェック
+    // スキップキーワードチェック（黒字に設定）
     const betweenText = getTextBetweenSlashAndColon(text);
     if (betweenText !== null) {
       const normalizedBetween = normalizeText(betweenText);
       const shouldSkip = COMMENT_SKIP_KEYWORDS.some(keyword => normalizedBetween.includes(keyword));
       if (shouldSkip) {
+        // 黒字に設定
+        const textElement = para.editAsText();
+        textElement.setForegroundColor(null);  // nullで黒字に戻る
         skippedCount++;
         continue;
       }
@@ -279,7 +282,7 @@ function saveLogToSpreadsheet(startTime, elapsed, results) {
           '画像エラー',
           '色グレー',
           '色紫',
-          '色スキップ',
+          '色黒字',
           'エラー'
         ]);
         sheet.getRange(1, 1, 1, 12).setFontWeight('bold');
