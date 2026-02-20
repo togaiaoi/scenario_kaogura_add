@@ -33,6 +33,18 @@ const CHARACTER_MAP = {
   'ケイト黒': 'Kate_BH',
   'ラブ': 'Love',
   'ラブ面': 'Love_fullface',
+  'ヘリオトロープ': 'Helio_Maid',  // ベース（フォルダ用）
+  'ヘリオトロープ使': 'Helio_Maid',
+  'ヘリオトロープ貴': 'Helio_Lady',
+  'フロール': 'Flor',
+  'フリン': 'Flynt',
+  'フリン赤': 'Flynt_RED',
+  'フューメリア': 'Fumaria',
+  'ロベリア': 'Lobe',
+  'ルル': 'Lulu',
+  'ルル青': 'Lulu_Blue',
+  'スタッフ': 'Staff',
+  '無名Wi': 'Wi_Nl'
   // ↓ 新しいキャラクターはここに追加
 };
 
@@ -62,7 +74,7 @@ const ERROR_NOTIFICATION_EMAIL = 'ono@wss.tokyo';  // 例: 'your-email@example.c
 
 // ===== コメント行の色付け設定 =====
 // パターン定義: 【キャラクター名】番号 または 【キャラクター名】番号X
-const FACE_PATTERN = /【(.+?)】(\d+)(.)?/;
+const FACE_PATTERN = /【(.+?)】(\d+)(\S+)?/;
 
 // コメント行の色
 const COMMENT_COLOR_GRAY = '#999999';    // 通常のコメント行

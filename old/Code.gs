@@ -345,7 +345,7 @@ const BATCH_SIZE = 20;
 
 // パターン定義: 【キャラクター名】番号 または 【キャラクター名】番号X（Xは1文字のサフィックス）
 // 例: 【Wi】34無 → キャラクター名="Wi無", 番号="34"
-const FACE_PATTERN = /【(.+?)】(\d+)(.)?/;
+const FACE_PATTERN = /【(.+?)】(\d+)(\S+)?/;
 
 // 画像挿入の共通処理（挿入/更新対応、alt text保存）
 function processImageInsertions(targets, service, limit, metadataCache) {
